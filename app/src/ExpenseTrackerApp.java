@@ -1,41 +1,67 @@
 import picocli.CommandLine;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.Month;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
-class ExpenseTracker {
-    // 지출 리스트 출력
+class ExpenseTracker implements AutoCloseable {
+    private static final Path saveDir = Path.of("data");
+    private static final Path dataJSON = Path.of("expenses.json");
     private static class Expense {
-        Integer id;
-        Integer categoryId;
-        LocalDate date;
-        String description;
-        Integer amount;
+        public Integer id;
+        public LocalDate date;
+        public String description;
+        public Integer amount;
     }
-    private final List<Expense> expenses = new ArrayList<>();
+    private static class ExpensesData {
+        public Integer sequence;
+        public List<Expense> expenses;
 
-    // 지출 예산
-    private final int[] monthlyBudget = new int[12];
-
-    // 지출 카테고리
-    static class Category {
-        private final Map<Integer, String> categoryMap = new HashMap<>();
-
-        void add(String categoryName) { System.out.printf("Create Category %s\n", categoryName); }
-        void list() { System.out.println("Listing all Category."); }
-        void update(Integer id, String categoryName) { System.out.printf("Update Category id:%d, name:%s\n", id, categoryName); }
-        void delete(Integer id) { System.out.printf("Delete Category id:%d", id); }
+        ExpensesData() {
+            sequence = 1;
+            expenses = new ArrayList<>();
+        }
     }
-    public final Category categories = new Category();
 
-    // 메서드
+    private static final ObjectMapper mapper = new ObjectMapper();
+    private final ExpensesData expenseManager;
+
+    ExpenseTracker() throws IOException {
+        Path file = Path.of(String.format("%s/%s", saveDir, dataJSON));
+
+        // data.json 이 존재하지 않는 경우 expenseManager 초기화
+        if(!Files.exists(file)) {
+            expenseManager = new ExpensesData();
+            return;
+        }
+
+        String fileData = Files.readString(file);
+        expenseManager = mapper.readValue(fileData, new TypeReference<>(){});
+    }
+
+    @Override
+    public void close() throws Exception {
+        Path file = Path.of(String.format("%s/%s", saveDir, dataJSON));
+        mapper.writerWithDefaultPrettyPrinter().writeValue(file, expenseManager);
+    }
+
     void add(String description, Integer amount) {
-        System.out.printf("Added description:%s amount:%d.\n", description, amount);
+        Expense expense = new Expense();
+
+        expense.id = expenseManager.sequence;
+        expense.date = LocalDate.now();
+        expense.description = description;
+        expense.amount = amount;
+
+        expenseManager.expenses.add(expense);
+        ++expenseManager.sequence;
+
+        System.out.printf("Expense added successfully (ID: %d)\n", expense.id);
     }
 
     void get(Integer id) {
@@ -46,16 +72,16 @@ class ExpenseTracker {
         System.out.printf("print list\n");
     }
 
-    void list(String categoryName) {
-        System.out.printf("print list (filtered category %s).\n", categoryName);
+    void list(Integer categoryId) {
+        System.out.printf("print list (filtered category %d).\n", categoryId);
     }
 
     void update(Integer id, String description, Integer amount) {
-        System.out.printf("Update Expense id:%d, description:\"%s\", amount:%d\n", id, description, amount);
+        System.out.printf("Expense updated successfully (ID: %d)\n", id);
     }
 
     void delete(Integer id) {
-        System.out.printf("Delete Expense id:%d\n", id);
+        System.out.printf("Expense deleted successfully (ID: %d)", id);
     }
 
     void summary() {
@@ -75,10 +101,6 @@ class ExpenseTracker {
         String remainLetter = monthStr.substring(1);
         System.out.printf("set Budget for %s : %d", firstLetter + remainLetter.toLowerCase(), amount );
     }
-
-    void exportCSV(Path fileName) {
-        System.out.printf("Export CSV to Path: %s", fileName);
-    }
 }
 
 @CommandLine.Command(name = "ExpenseTrackerApp", mixinStandardHelpOptions = true, subcommands = {
@@ -89,8 +111,7 @@ class ExpenseTracker {
     DeleteCommand.class,
     SummaryCommand.class,
     BudgetCommand.class,
-    ExportCommand.class,
-    CategoryCommand.class
+    //CategoryCommand.class
 })
 public class ExpenseTrackerApp implements Runnable {
     static void main(String... args) {
@@ -129,9 +150,16 @@ class AddCommand implements Runnable {
     @CommandLine.Option(names = "--amount", required = true, converter = UnsignedIntConverter.class)
     Integer amount;
 
+    @CommandLine.Option(names = "--category", converter = UnsignedIntConverter.class)
+    Integer categoryId;
+
     @Override
     public void run() {
-        new ExpenseTracker().add(description, amount);
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.add(description, amount);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }
 
@@ -141,19 +169,28 @@ class GetCommand implements Runnable {
     Integer id;
 
     @Override
-    public void run() { new ExpenseTracker().get(id);}
+    public void run() {
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.get(id);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
 
 @CommandLine.Command(name = "list", description = "List current expense items.")
 class ListCommand implements Runnable {
-    @CommandLine.Option(names = "--category")
-    String Category = "";
+    @CommandLine.Option(names = "--category", converter = UnsignedIntConverter.class)
+    Integer CategoryId;
 
     @Override
     public void run() {
-        ExpenseTracker app = new ExpenseTracker();
-        if(Category.isEmpty()) app.list();
-        else app.list(Category);
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            if(CategoryId == null) c.list();
+            else c.list(CategoryId);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }
 
@@ -169,7 +206,13 @@ class UpdateCommand implements Runnable {
     Integer amount;
 
     @Override
-    public void run() { new ExpenseTracker().update(id, description, amount); }
+    public void run() {
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.update(id, description, amount);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
 
 @CommandLine.Command(name = "delete", description = "Delete expense item.")
@@ -178,7 +221,13 @@ class DeleteCommand implements Runnable {
     Integer id;
 
     @Override
-    public void run() { new ExpenseTracker().delete(id); }
+    public void run() {
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.delete(id);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
 
 @CommandLine.Command(name = "summary", description = "Print Summary of expense")
@@ -188,9 +237,12 @@ class SummaryCommand implements Runnable {
 
     @Override
     public void run() {
-        ExpenseTracker app = new ExpenseTracker();
-        if (month == null) app.summary();
-        else app.summary(Month.of(month));
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            if (month == null) c.summary();
+            else c.summary(Month.of(month));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }
 
@@ -203,18 +255,16 @@ class BudgetCommand implements Runnable {
     Integer amount;
 
     @Override
-    public void run() { new ExpenseTracker().setBudget(Month.of(month), amount); }
+    public void run() {
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.setBudget(Month.of(month), amount);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
 
-@CommandLine.Command(name = "export", description = "export expense item to CSV Sheet.")
-class ExportCommand implements Runnable {
-    @CommandLine.Option(names = "--file", required = true)
-    Path filePath;
-
-    @Override
-    public void run() { new ExpenseTracker().exportCSV(filePath); }
-}
-
+/*
 @CommandLine.Command(name = "category", mixinStandardHelpOptions = true, description = "a Categories.", subcommands = {
         CategoryCommand.CategoryAddCommand.class,
         CategoryCommand.CategoryListCommand.class,
@@ -228,13 +278,25 @@ class CategoryCommand {
         String categoryName;
 
         @Override
-        public void run() { new ExpenseTracker().categories.add(categoryName); }
+        public void run() {
+            try (ExpenseTracker c = new ExpenseTracker()) {
+                c.categories.add(categoryName);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     @CommandLine.Command(name = "list", description = "list category.")
     static class CategoryListCommand implements Runnable {
         @Override
-        public void run() { new ExpenseTracker().categories.list(); }
+        public void run() {
+            try (ExpenseTracker c = new ExpenseTracker()) {
+                c.categories.list();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     @CommandLine.Command(name = "update", description = "update category item.")
@@ -246,7 +308,13 @@ class CategoryCommand {
         String categoryName;
 
         @Override
-        public void run() { new ExpenseTracker().categories.update(id, categoryName); }
+        public void run() {
+            try (ExpenseTracker c = new ExpenseTracker()) {
+                c.categories.update(id, categoryName);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     @CommandLine.Command(name = "delete", description = "delete category item.")
@@ -255,7 +323,14 @@ class CategoryCommand {
         Integer id;
 
         @Override
-        public void run() { new ExpenseTracker().categories.delete(id); }
+        public void run() {
+            try (ExpenseTracker c = new ExpenseTracker()) {
+                c.categories.delete(id);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
 }
+ */
