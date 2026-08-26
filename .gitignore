@@ -10,6 +10,9 @@
 # Json files
 *.json
 
+# CSV files
+*.csv
+
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/
 
