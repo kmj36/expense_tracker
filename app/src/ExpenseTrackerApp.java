@@ -1,4 +1,5 @@
 import picocli.CommandLine;
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
@@ -17,19 +18,32 @@ class ExpenseTracker implements AutoCloseable {
         public LocalDate date;
         public String description;
         public Integer amount;
+
+        public Integer getId() {
+            return id;
+        }
+
+        public Integer getAmount() {
+            return amount;
+        }
     }
     private static class ExpensesData {
-        public Integer sequence;
         public List<Expense> expenses;
 
         ExpensesData() {
-            sequence = 1;
             expenses = new ArrayList<>();
+        }
+
+        public int nextId() {
+            return expenses.stream()
+                    .mapToInt(Expense::getId)
+                    .max()
+                    .orElse(0) + 1;
         }
     }
 
     private static final ObjectMapper mapper = new ObjectMapper();
-    private final ExpensesData expenseManager;
+    private ExpensesData expenseManager;
 
     ExpenseTracker() throws IOException {
         Path file = Path.of(String.format("%s/%s", saveDir, dataJSON));
@@ -41,11 +55,15 @@ class ExpenseTracker implements AutoCloseable {
         }
 
         String fileData = Files.readString(file);
-        expenseManager = mapper.readValue(fileData, new TypeReference<>(){});
+        try {
+            expenseManager = mapper.readValue(fileData, new TypeReference<>(){});
+        } catch (JacksonException e) {
+            expenseManager = new ExpensesData();
+        }
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() {
         Path file = Path.of(String.format("%s/%s", saveDir, dataJSON));
         mapper.writerWithDefaultPrettyPrinter().writeValue(file, expenseManager);
     }
@@ -53,53 +71,79 @@ class ExpenseTracker implements AutoCloseable {
     void add(String description, Integer amount) {
         Expense expense = new Expense();
 
-        expense.id = expenseManager.sequence;
+        expense.id = expenseManager.nextId();
         expense.date = LocalDate.now();
         expense.description = description;
         expense.amount = amount;
 
         expenseManager.expenses.add(expense);
-        ++expenseManager.sequence;
 
-        System.out.printf("Expense added successfully (ID: %d)\n", expense.id);
+        System.out.printf("Expense added successfully (ID: %d)%n", expense.id);
     }
 
     void get(Integer id) {
-        System.out.printf("Get id:%d\n", id);
+        Optional<Expense> expense = expenseManager.expenses.stream()
+                .filter(c -> c.id.equals(id))
+                .findFirst();
+
+        if (expense.isPresent()) {
+            Expense e = expense.get();
+
+            System.out.printf("%-3s %-12s %-12s %s%n", "ID", "Date", "Description", "Amount");
+            System.out.printf("%-3d %-12s %-12s $%d%n", e.id, e.date, e.description, e.amount);
+        } else
+            throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
     }
 
     void list() {
-        System.out.printf("print list\n");
+        System.out.printf("%-3s %-12s %-12s %s%n", "ID", "Date", "Description", "Amount");
+        for(Expense expense : expenseManager.expenses)
+            System.out.printf("%-3d %-12s %-12s $%d%n", expense.id, expense.date, expense.description, expense.amount);
     }
 
-    void list(Integer categoryId) {
-        System.out.printf("print list (filtered category %d).\n", categoryId);
-    }
+    void update(Integer id, String description, Integer amount) throws IndexOutOfBoundsException {
+        Optional<Expense> expense = expenseManager.expenses.stream()
+                .filter(c -> c.id.equals(id))
+                .findFirst();
 
-    void update(Integer id, String description, Integer amount) {
-        System.out.printf("Expense updated successfully (ID: %d)\n", id);
+        if (expense.isPresent()) {
+            Expense e = expense.get();
+
+            e.description = description;
+            e.amount = amount;
+
+            System.out.printf("Expense updated successfully (ID: %d)%n", id);
+        } else
+            throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
     }
 
     void delete(Integer id) {
-        System.out.printf("Expense deleted successfully (ID: %d)", id);
+        boolean removed = expenseManager.expenses.removeIf(e -> e.id.equals(id));
+
+        if(removed)
+            System.out.printf("Expense deleted successfully (ID: %d)%n", id);
+        else
+            throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
     }
 
     void summary() {
-        System.out.println("Summary Expense");
+        Integer total = expenseManager.expenses.stream()
+                .mapToInt(Expense::getAmount)
+                .sum();
+
+        System.out.printf("Total expenses: $%d%n", total);
     }
 
     void summary(Month month) {
-        String monthStr = month.toString();
-        String firstLetter = monthStr.substring(0, 1);
-        String remainLetter = monthStr.substring(1);
-        System.out.printf("Summary Expense month: %s\n", firstLetter + remainLetter.toLowerCase());
-    }
+        Integer totalMonth = expenseManager.expenses.stream()
+                .filter(c -> c.date.getMonth().equals(month))
+                .mapToInt(Expense::getAmount)
+                .sum();
 
-    void setBudget(Month month, Integer amount) {
         String monthStr = month.toString();
         String firstLetter = monthStr.substring(0, 1);
         String remainLetter = monthStr.substring(1);
-        System.out.printf("set Budget for %s : %d", firstLetter + remainLetter.toLowerCase(), amount );
+        System.out.printf("Total expenses for %s: $%d%n", firstLetter + remainLetter.toLowerCase(), totalMonth);
     }
 }
 
@@ -109,9 +153,7 @@ class ExpenseTracker implements AutoCloseable {
     ListCommand.class,
     UpdateCommand.class,
     DeleteCommand.class,
-    SummaryCommand.class,
-    BudgetCommand.class,
-    //CategoryCommand.class
+    SummaryCommand.class
 })
 public class ExpenseTrackerApp implements Runnable {
     static void main(String... args) {
@@ -125,10 +167,13 @@ public class ExpenseTrackerApp implements Runnable {
     }
 }
 
-class UnsignedIntConverter implements CommandLine.ITypeConverter<Integer> {
+class UnsignedIntAndNonZeroConverter implements CommandLine.ITypeConverter<Integer> {
     @Override
     public Integer convert(String s) throws Exception {
-        return Integer.parseUnsignedInt(s);
+        int parse = Integer.parseUnsignedInt(s);
+        if(parse < 1)
+            throw new IllegalArgumentException("A number greater than 0 required.");
+        return parse;
     }
 }
 class Range1To12Converter implements CommandLine.ITypeConverter<Integer> {
@@ -147,11 +192,8 @@ class AddCommand implements Runnable {
     @CommandLine.Option(names = "--description", required = true)
     String description;
 
-    @CommandLine.Option(names = "--amount", required = true, converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--amount", required = true, converter = UnsignedIntAndNonZeroConverter.class)
     Integer amount;
-
-    @CommandLine.Option(names = "--category", converter = UnsignedIntConverter.class)
-    Integer categoryId;
 
     @Override
     public void run() {
@@ -165,14 +207,16 @@ class AddCommand implements Runnable {
 
 @CommandLine.Command(name = "get", description = "Get current expense item from list.")
 class GetCommand implements Runnable {
-    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntAndNonZeroConverter.class)
     Integer id;
 
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
             c.get(id);
-        } catch (Exception e) {
+        } catch (NoSuchElementException  e) {
+            System.out.printf("Get expense failed. (Reason: %s)", e.getMessage());
+        } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
@@ -180,14 +224,13 @@ class GetCommand implements Runnable {
 
 @CommandLine.Command(name = "list", description = "List current expense items.")
 class ListCommand implements Runnable {
-    @CommandLine.Option(names = "--category", converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--category", converter = UnsignedIntAndNonZeroConverter.class)
     Integer CategoryId;
 
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
-            if(CategoryId == null) c.list();
-            else c.list(CategoryId);
+            c.list();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -196,20 +239,22 @@ class ListCommand implements Runnable {
 
 @CommandLine.Command(name = "update", description = "Update expense item values.")
 class UpdateCommand implements Runnable {
-    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntAndNonZeroConverter.class)
     Integer id;
 
     @CommandLine.Option(names = "--description", required = true)
     String description;
 
-    @CommandLine.Option(names = "--amount", required = true, converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--amount", required = true, converter = UnsignedIntAndNonZeroConverter.class)
     Integer amount;
 
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
             c.update(id, description, amount);
-        } catch (Exception e) {
+        } catch (NoSuchElementException e) {
+            System.out.printf("Expense update failed. (%s)", e.getMessage());
+        } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
@@ -217,14 +262,16 @@ class UpdateCommand implements Runnable {
 
 @CommandLine.Command(name = "delete", description = "Delete expense item.")
 class DeleteCommand implements Runnable {
-    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntConverter.class)
+    @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntAndNonZeroConverter.class)
     Integer id;
 
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
             c.delete(id);
-        } catch (Exception e) {
+        } catch (NoSuchElementException e) {
+            System.out.printf("Expense delete failed. (%s)", e.getMessage());
+        } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
@@ -245,92 +292,3 @@ class SummaryCommand implements Runnable {
         }
     }
 }
-
-@CommandLine.Command(name = "budget", description = "Set monthly budget")
-class BudgetCommand implements Runnable {
-    @CommandLine.Option(names="--month", required = true, converter = Range1To12Converter.class)
-    Integer month;
-
-    @CommandLine.Option(names="--amount", required = true, converter = UnsignedIntConverter.class)
-    Integer amount;
-
-    @Override
-    public void run() {
-        try (ExpenseTracker c = new ExpenseTracker()) {
-            c.setBudget(Month.of(month), amount);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-}
-
-/*
-@CommandLine.Command(name = "category", mixinStandardHelpOptions = true, description = "a Categories.", subcommands = {
-        CategoryCommand.CategoryAddCommand.class,
-        CategoryCommand.CategoryListCommand.class,
-        CategoryCommand.CategoryUpdateCommand.class,
-        CategoryCommand.CategoryDeleteCommand.class
-})
-class CategoryCommand {
-    @CommandLine.Command(name = "add", description = "create category item.")
-    static class CategoryAddCommand implements Runnable {
-        @CommandLine.Option(names="--name", required = true)
-        String categoryName;
-
-        @Override
-        public void run() {
-            try (ExpenseTracker c = new ExpenseTracker()) {
-                c.categories.add(categoryName);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    @CommandLine.Command(name = "list", description = "list category.")
-    static class CategoryListCommand implements Runnable {
-        @Override
-        public void run() {
-            try (ExpenseTracker c = new ExpenseTracker()) {
-                c.categories.list();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    @CommandLine.Command(name = "update", description = "update category item.")
-    static class CategoryUpdateCommand implements Runnable {
-        @CommandLine.Option(names = "--id", required = true, converter = UnsignedIntConverter.class)
-        Integer id;
-
-        @CommandLine.Option(names = "--name", required = true)
-        String categoryName;
-
-        @Override
-        public void run() {
-            try (ExpenseTracker c = new ExpenseTracker()) {
-                c.categories.update(id, categoryName);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    @CommandLine.Command(name = "delete", description = "delete category item.")
-    static class CategoryDeleteCommand implements Runnable {
-        @CommandLine.Option(names = "--id", required = true)
-        Integer id;
-
-        @Override
-        public void run() {
-            try (ExpenseTracker c = new ExpenseTracker()) {
-                c.categories.delete(id);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-}
- */
