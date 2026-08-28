@@ -3,6 +3,8 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import java.io.BufferedWriter;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -145,6 +147,33 @@ class ExpenseTracker implements AutoCloseable {
         String remainLetter = monthStr.substring(1);
         System.out.printf("Total expenses for %s: $%d%n", firstLetter + remainLetter.toLowerCase(), totalMonth);
     }
+
+    void exportCSV(String fileName) {
+        if (!fileName.matches("[a-zA-Z0-9_\\-]+")) {
+            throw new IllegalArgumentException("fileName contains invalid characters");
+        }
+
+        Path exportDir = Path.of(String.format("%s/%s.csv", saveDir, fileName));
+
+        try(BufferedWriter bw = new BufferedWriter(new FileWriter(exportDir.toFile()))) {
+            if(!Files.exists(saveDir))
+                Files.createDirectory(saveDir);
+
+            bw.write("ID,Date,Description,Amount\n");
+            for(Expense expense : expenseManager.expenses) {
+                bw.write(expense.id.toString());
+                bw.write(',');
+                bw.write(expense.date.toString());
+                bw.write(',');
+                bw.write(expense.description);
+                bw.write(',');
+                bw.write(expense.amount.toString());
+                bw.write('\n');
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
 
 @CommandLine.Command(name = "ExpenseTrackerApp", mixinStandardHelpOptions = true, subcommands = {
@@ -153,7 +182,8 @@ class ExpenseTracker implements AutoCloseable {
     ListCommand.class,
     UpdateCommand.class,
     DeleteCommand.class,
-    SummaryCommand.class
+    SummaryCommand.class,
+    ExportCommand.class
 })
 public class ExpenseTrackerApp implements Runnable {
     static void main(String... args) {
@@ -169,7 +199,7 @@ public class ExpenseTrackerApp implements Runnable {
 
 class UnsignedIntAndNonZeroConverter implements CommandLine.ITypeConverter<Integer> {
     @Override
-    public Integer convert(String s) throws Exception {
+    public Integer convert(String s) throws IllegalArgumentException {
         int parse = Integer.parseUnsignedInt(s);
         if(parse < 1)
             throw new IllegalArgumentException("A number greater than 0 required.");
@@ -178,7 +208,7 @@ class UnsignedIntAndNonZeroConverter implements CommandLine.ITypeConverter<Integ
 }
 class Range1To12Converter implements CommandLine.ITypeConverter<Integer> {
     @Override
-    public Integer convert(String value) throws Exception {
+    public Integer convert(String value) throws IllegalArgumentException {
         int num = Integer.parseInt(value);
         if (num < 1 || num > 12) {
             throw new IllegalArgumentException("A month between 1 and 12 is required.");
@@ -224,9 +254,6 @@ class GetCommand implements Runnable {
 
 @CommandLine.Command(name = "list", description = "List current expense items.")
 class ListCommand implements Runnable {
-    @CommandLine.Option(names = "--category", converter = UnsignedIntAndNonZeroConverter.class)
-    Integer CategoryId;
-
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
@@ -287,6 +314,21 @@ class SummaryCommand implements Runnable {
         try (ExpenseTracker c = new ExpenseTracker()) {
             if (month == null) c.summary();
             else c.summary(Month.of(month));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+
+@CommandLine.Command(name = "export", description = "Export expenses to csv file.")
+class ExportCommand implements Runnable {
+    @CommandLine.Option(names = "--fileName", required = true)
+    String fileName;
+
+    @Override
+    public void run() {
+        try (ExpenseTracker c = new ExpenseTracker()) {
+            c.exportCSV(fileName);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
