@@ -199,7 +199,7 @@ public class ExpenseTrackerApp implements Runnable {
 
 class UnsignedIntAndNonZeroConverter implements CommandLine.ITypeConverter<Integer> {
     @Override
-    public Integer convert(String s) throws Exception {
+    public Integer convert(String s) throws IllegalArgumentException {
         int parse = Integer.parseUnsignedInt(s);
         if(parse < 1)
             throw new IllegalArgumentException("A number greater than 0 required.");
@@ -208,7 +208,7 @@ class UnsignedIntAndNonZeroConverter implements CommandLine.ITypeConverter<Integ
 }
 class Range1To12Converter implements CommandLine.ITypeConverter<Integer> {
     @Override
-    public Integer convert(String value) throws Exception {
+    public Integer convert(String value) throws IllegalArgumentException {
         int num = Integer.parseInt(value);
         if (num < 1 || num > 12) {
             throw new IllegalArgumentException("A month between 1 and 12 is required.");
@@ -254,9 +254,6 @@ class GetCommand implements Runnable {
 
 @CommandLine.Command(name = "list", description = "List current expense items.")
 class ListCommand implements Runnable {
-    @CommandLine.Option(names = "--category", converter = UnsignedIntAndNonZeroConverter.class)
-    Integer CategoryId;
-
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
