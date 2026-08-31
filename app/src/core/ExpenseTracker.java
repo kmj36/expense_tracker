@@ -31,9 +31,15 @@ public class ExpenseTracker implements AutoCloseable {
     public ExpenseTracker() throws IOException {
         Path file = Path.of(String.format("%s/%s", saveDir, dataJSON));
 
-        // data.json 이 존재하지 않는 경우 expenseManager 초기화
+        // 디렉터리가 없으면 생성
+        if (!Files.exists(saveDir)) {
+            Files.createDirectories(saveDir);
+        }
+
+        // 파일이 없으면 빈 데이터로 초기화 후 파일까지 생성
         if (!Files.exists(file)) {
             expenseManager = new ExpensesData();
+            mapper.writerWithDefaultPrettyPrinter().writeValue(file, expenseManager);
             return;
         }
 
