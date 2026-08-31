@@ -10,6 +10,7 @@ import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -46,10 +47,13 @@ class ExpenseTracker implements AutoCloseable {
     private static class ExpensesData {
         public List<Expense> expenses;
         public HashMap<Integer, String> categories;
+        public BigDecimal[] monthlyBudget;
 
         ExpensesData() {
             expenses = new ArrayList<>();
             categories = new HashMap<>();
+            monthlyBudget = new BigDecimal[12];
+            Arrays.fill(monthlyBudget, BigDecimal.ZERO);
         }
 
         public int nextId() {
@@ -100,6 +104,29 @@ class ExpenseTracker implements AutoCloseable {
 
             System.out.println(table);
         }
+
+        public void checkBudget(Month month) {
+            BigDecimal totalMonth = expenses.stream()
+                    .filter(e -> e.date.getMonth().equals(month))
+                    .map(Expense::getAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            BigDecimal budget = monthlyBudget[month.getValue() - 1];
+
+            if (budget.compareTo(BigDecimal.ZERO) == 0) return;
+
+            BigDecimal ratio = totalMonth.divide(budget, 4, RoundingMode.HALF_UP);
+            BigDecimal percent = ratio.multiply(new BigDecimal("100")).setScale(1, RoundingMode.HALF_UP);
+
+            if (ratio.compareTo(BigDecimal.ONE) >= 0) {
+                BigDecimal over = totalMonth.subtract(budget);
+                System.out.printf("[Exceeded: %s budget exceeded by $%.2f ($%.2f limit, spent $%.2f)]%n",
+                        month, over, budget, totalMonth);
+            } else if (ratio.compareTo(new BigDecimal("0.8")) >= 0) {
+                System.out.printf("[Warning: %s is at %s%% of budget ($%.2f limit, spent $%.2f)]%n",
+                        month, percent, budget, totalMonth);
+            }
+        }
     }
 
     private static final ObjectMapper mapper = new ObjectMapper();
@@ -139,6 +166,8 @@ class ExpenseTracker implements AutoCloseable {
         expenseManager.expenses.add(expense);
 
         System.out.printf("Expense added successfully (ID: %d)%n", expense.id);
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     // 카테고리 필드 추가
@@ -160,6 +189,8 @@ class ExpenseTracker implements AutoCloseable {
         expenseManager.expenses.add(expense);
 
         System.out.printf("Expense added successfully (ID: %d)%n", expense.id);
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     void get(Integer id) {
@@ -171,9 +202,6 @@ class ExpenseTracker implements AutoCloseable {
             Expense e = expense.get();
 
             expenseManager.printExpenseTable(List.of(e));
-
-            //System.out.printf("%-3s %-12s %-12s %-12s %s%n", "ID", "Category", "Date", "Description", "Amount");
-            //System.out.printf("%-3d %-12s %-12s %-12s $%s%n", e.id, expenseManager.categories.get(e.categoryID), e.date, e.description, e.amount);
         } else
             throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
     }
@@ -181,9 +209,7 @@ class ExpenseTracker implements AutoCloseable {
     void list() {
         expenseManager.printExpenseTable(expenseManager.expenses);
 
-        //System.out.printf("%-3s %-12s %-12s %-12s %s%n", "ID", "Category", "Date", "Description", "Amount");
-        //for(Expense expense : expenseManager.expenses)
-        //    System.out.printf("%-3d %-12s %-12s %-12s $%s%n", expense.id, expenseManager.categories.get(expense.categoryID), expense.date, expense.description, expense.amount);
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     // 카테고리별 리스트 출력
@@ -196,12 +222,20 @@ class ExpenseTracker implements AutoCloseable {
                 .filter(c -> Objects.equals(c.categoryID, categoryID));
 
         System.out.printf("[Category - %s]%n", expenseManager.categories.get(categoryID));
+
         expenseManager.printExpenseTable(FilteredExpenseStream.toList());
 
-        //System.out.printf("%-3s %-12s %-12s %-12s %s%n", "ID", "Category", "Date", "Description", "Amount");
+        expenseManager.checkBudget(LocalDate.now().getMonth());
+    }
 
-        //for(Expense expense : FilteredExpenseStream.toList())
-        //    System.out.printf("%-3d %-12s %-12s %-12s $%s%n", expense.id, expenseManager.categories.get(expense.categoryID), expense.date, expense.description, expense.amount);
+    // 월별 리스트 출력
+    void list(Month month) {
+        Stream<Expense> FilteredExpenseStream = expenseManager.expenses.stream()
+                .filter(c -> Objects.equals(c.date.getMonth(), month));
+
+        expenseManager.printExpenseTable(FilteredExpenseStream.toList());
+
+        expenseManager.checkBudget(month);
     }
 
     void update(Integer id, String description, BigDecimal amount, Integer categoryID) throws IndexOutOfBoundsException {
@@ -222,6 +256,8 @@ class ExpenseTracker implements AutoCloseable {
             System.out.printf("Expense updated successfully (ID: %d)%n", id);
         } else
             throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     void delete(Integer id) {
@@ -231,6 +267,8 @@ class ExpenseTracker implements AutoCloseable {
             System.out.printf("Expense deleted successfully (ID: %d)%n", id);
         else
             throw new NoSuchElementException(String.format("Expense Not Found (ID: %d)", id));
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     void summary() {
@@ -239,6 +277,8 @@ class ExpenseTracker implements AutoCloseable {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         System.out.printf("Total expenses: $%s%n", total);
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     // 월별 비용 요약
@@ -252,6 +292,16 @@ class ExpenseTracker implements AutoCloseable {
         String firstLetter = monthStr.substring(0, 1);
         String remainLetter = monthStr.substring(1);
         System.out.printf("Total expenses for %s: $%s%n", firstLetter + remainLetter.toLowerCase(), totalMonth);
+
+        expenseManager.checkBudget(month);
+    }
+
+    void setBudget(Month month, BigDecimal budget) {
+        expenseManager.monthlyBudget[month.getValue()-1] = budget;
+
+        System.out.printf("%s Budget updated successfully (Amount: $%s)%n", month, budget);
+
+        expenseManager.checkBudget(LocalDate.now().getMonth());
     }
 
     void addCategory(String category) {
@@ -325,7 +375,8 @@ class ExpenseTracker implements AutoCloseable {
     DeleteCommand.class,
     SummaryCommand.class,
     CategoryCommand.class,
-    ExportCommand.class
+    ExportCommand.class,
+    BudgetCommand.class
 })
 public class ExpenseTrackerApp implements Runnable {
     static void main(String... args) {
@@ -413,14 +464,28 @@ class GetCommand implements Runnable {
 
 @CommandLine.Command(name = "list", description = "List current expense items.")
 class ListCommand implements Runnable {
-    @CommandLine.Option(names = "--categoryID", converter = UnsignedIntAndNonZeroConverter.class)
-    Integer categoryId;
+    @CommandLine.ArgGroup(exclusive = true)
+    ExclusiveOptions exclusiveOptions;
+
+    static class ExclusiveOptions {
+        @CommandLine.Option(names = "--categoryID", converter = UnsignedIntAndNonZeroConverter.class)
+        Integer categoryId;
+
+        @CommandLine.Option(names = "--month", converter = Range1To12Converter.class)
+        Integer month;
+    }
 
     @Override
     public void run() {
         try (ExpenseTracker c = new ExpenseTracker()) {
-            if(categoryId == null) c.list();
-            else c.list(categoryId);
+            if (exclusiveOptions == null) {
+                c.list();
+            } else if(exclusiveOptions.categoryId != null) {
+                c.list(exclusiveOptions.categoryId);
+            } else if (exclusiveOptions.month != null) {
+                c.list(Month.of(exclusiveOptions.month));
+            } else
+                c.list();
         } catch (NoSuchElementException e) {
             System.out.println(e.getMessage());
         } catch (Exception e) {
@@ -498,6 +563,24 @@ class ExportCommand implements Runnable {
         try (ExpenseTracker c = new ExpenseTracker()) {
             c.exportCSV(fileName);
         } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+
+@CommandLine.Command(name = "budget", description = "Set Monthly Budget")
+class BudgetCommand implements Runnable {
+    @CommandLine.Option(names = "--month", required = true, description = "Budget of Month", converter = Range1To12Converter.class)
+    Integer month;
+
+    @CommandLine.Option(names = "--amount", required = true, description = "Budget Amount", converter = UnsignedBigDecimalCostConverter.class)
+    BigDecimal amount;
+
+    @Override
+    public void run() {
+        try(ExpenseTracker c = new ExpenseTracker()) {
+            c.setBudget(Month.of(month), amount);
+        } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
